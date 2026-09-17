@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;">
+<title>TANGAZO</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="app">
+
+  <aside class="sidebar">
+    <div class="logo">
+      <span class="mark">T</span>
+      <div>
+        <div class="logo-name">TANGAZO</div>
+        <div class="logo-sub">marketing department</div>
+      </div>
+    </div>
+
+    <div class="brand-switch">
+      <label>Active brand</label>
+      <select id="brandSelect"></select>
+    </div>
+
+    <nav id="nav">
+      <button class="nav-item active" data-view="dashboard"><span class="i">▦</span>Dashboard</button>
+      <button class="nav-item" data-view="campaign"><span class="i">▶</span>New campaign</button>
+      <button class="nav-item" data-view="agents"><span class="i">◈</span>Agents</button>
+      <button class="nav-item" data-view="calendar"><span class="i">▤</span>Calendar</button>
+      <button class="nav-item" data-view="queue"><span class="i">↑</span>Publishing</button>
+      <button class="nav-item" data-view="library"><span class="i">▣</span>Library</button>
+      <button class="nav-item" data-view="brain"><span class="i">◉</span>Brand Brain</button>
+      <button class="nav-item" data-view="settings"><span class="i">⚙</span>Settings</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div id="statusDot" class="status"><span class="dot"></span><span id="statusText">checking…</span></div>
+      <div class="ver" id="verText"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="view"></div>
+  </main>
+
+</div>
+
+<div id="toast" class="toast"></div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3 id="modalTitle"></h3><button class="icon-btn" id="modalClose">✕</button></div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

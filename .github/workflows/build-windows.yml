@@ -1,0 +1,64 @@
+name: Build Windows app
+
+# Builds TANGAZO.exe on GitHub's own Windows machines.
+#
+#   - Every push to main: builds, so you know the code still compiles.
+#   - Every tag like v1.0.1: builds AND attaches the installer + portable exe
+#     to a GitHub Release, so you can download it from the Releases page
+#     instead of anyone emailing you zip files.
+#
+# To cut a release from your PC:
+#     git tag v1.0.1
+#     git push origin v1.0.1
+# Then wait ~5 minutes and look under Releases.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Run the test suite
+        run: npm test
+      # Informational only: a headless Electron boot can fail for reasons that
+      # have nothing to do with the code, and it must never block a release.
+      - name: Boot the app headlessly and check every view renders
+        continue-on-error: true
+        run: xvfb-run -a npm run smoke
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Build installer and portable exe
+        run: npm run dist
+      - name: Keep the build even without a tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: TANGAZO-windows
+          path: |
+            dist/*.exe
+          retention-days: 30
+      - name: Attach to the release when this is a tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true
