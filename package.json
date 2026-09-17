@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "tangazo",
   "productName": "TANGAZO",
   "version": "1.0.0",
@@ -24,20 +24,13 @@
     "files": [
       "main.js",
       "preload.js",
-      "src/**/*",
-      "assets/**/*"
+      "src/**/*"
     ],
     "win": {
       "target": [
-        "portable",
-        "nsis"
+        "portable"
       ],
-      "artifactName": "TANGAZO-${version}-${arch}.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "artifactName": "TANGAZO-${version}.${ext}"
     }
   }
 }
