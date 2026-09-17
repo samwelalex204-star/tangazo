@@ -14,7 +14,7 @@ const agents = require('./src/core/agents');
 const pipeline = require('./src/core/pipeline');
 const exporters = require('./src/core/exporters');
 const publisher = require('./src/core/publisher');
-const claude = require('./src/core/claude');
+const llm = require('./src/core/llm');
 
 let win = null;
 let running = null; // AbortController for the in-flight generation
@@ -150,12 +150,28 @@ app.on('window-all-closed', () => { publisher.stop(); if (process.platform !== '
 
 /* --------------------------------------------------------------- ipc: app */
 
+const MASK = '••••••••';
+
+/** Never hand a real key to the renderer - it only needs to know one exists. */
 function maskedSettings() {
   const s = store.getSettings();
+  const providers = {};
+  for (const id of Object.keys(s.providers || {})) {
+    const p = s.providers[id];
+    providers[id] = {
+      model: p.model || '',
+      baseUrl: p.baseUrl || '',
+      hasKey: !!p.apiKey,
+      apiKey: p.apiKey ? MASK : ''
+    };
+  }
+  const active = llm.describe(s);
   return Object.assign({}, s, {
-    apiKey: s.apiKey ? s.apiKey.slice(0, 7) + '...' + s.apiKey.slice(-4) : '',
-    hasApiKey: !!s.apiKey,
-    apiKeyEncrypted: undefined
+    providers,
+    hasApiKey: active.hasKey,
+    activeProviderName: active.providerName,
+    activeModel: active.model,
+    providerList: llm.listProviders()
   });
 }
 
@@ -217,16 +233,39 @@ handle('brand:brief', async ({ id }) => brands.brandBrief(store.findOne('brands'
 /* ------------------------------------------------------------ ipc: settings */
 
 handle('settings:get', async () => maskedSettings());
+handle('settings:providers', async () => llm.listProviders());
+
 handle('settings:save', async (patch) => {
-  const clean = Object.assign({}, patch);
-  if (clean.apiKey !== undefined && /\.\.\./.test(clean.apiKey)) delete clean.apiKey; // masked value, don't overwrite
+  const clean = Object.assign({}, patch || {});
+
+  // The renderer sends back the mask for any key the user did not retype.
+  // Dropping those preserves the stored key instead of wiping it.
+  if (clean.providers) {
+    const providers = {};
+    for (const id of Object.keys(clean.providers)) {
+      const p = Object.assign({}, clean.providers[id]);
+      if (p.apiKey === MASK || p.apiKey === '') delete p.apiKey;
+      delete p.hasKey;
+      providers[id] = p;
+    }
+    clean.providers = providers;
+  }
+
   const s = store.saveSettings(clean);
   if (s.autoPublish) publisher.start(60000); else publisher.stop();
   return maskedSettings();
 });
-handle('settings:testKey', async ({ apiKey, model }) => {
-  const key = apiKey && !/\.\.\./.test(apiKey) ? apiKey : store.getSettings().apiKey;
-  return claude.testKey(key, model || store.getSettings().model);
+
+handle('settings:testKey', async ({ provider, apiKey, model, baseUrl }) => {
+  const s = store.getSettings();
+  const id = provider || s.provider;
+  const stored = (s.providers && s.providers[id]) || {};
+  return llm.testKey({
+    provider: id,
+    apiKey: (apiKey && apiKey !== MASK) ? apiKey : stored.apiKey,
+    model: model || stored.model,
+    baseUrl: baseUrl || stored.baseUrl
+  });
 });
 handle('settings:testWebhook', async ({ url, secret }) => {
   const s = store.getSettings();
@@ -241,7 +280,7 @@ handle('agent:run', async ({ agentId, brandId, input, save }) => {
   const brand = store.findOne('brands', brandId) || store.findOne('brands', store.getDb().activeBrandId);
   if (!brand) throw new Error('No brand selected. Create a brand first.');
   const settings = store.getSettings();
-  if (!settings.apiKey) throw new Error('No Anthropic API key set. Open Settings and paste your key.');
+  llm.assertReady(settings);
 
   running = new AbortController();
   try {
@@ -254,6 +293,7 @@ handle('agent:run', async ({ agentId, brandId, input, save }) => {
       brandId: brand.id,
       brandName: brand.name,
       title: input.topic || input.goal || input.brief || input.subject || input.offer || input.theme || input.asset || agents.AGENTS[agentId].name,
+      engine: llm.describe(settings),
       input,
       data
     });
@@ -274,7 +314,7 @@ handle('campaign:run', async ({ brandId, input }) => {
   const brand = store.findOne('brands', brandId) || store.findOne('brands', store.getDb().activeBrandId);
   if (!brand) throw new Error('No brand selected. Create a brand first.');
   const settings = store.getSettings();
-  if (!settings.apiKey) throw new Error('No Anthropic API key set. Open Settings and paste your key.');
+  llm.assertReady(settings);
 
   running = new AbortController();
   const send = (p) => { if (win && !win.isDestroyed()) win.webContents.send('campaign:progress', p); };
@@ -287,6 +327,7 @@ handle('campaign:run', async ({ brandId, input }) => {
       name: (data.campaign && data.campaign.campaignName) || ('Campaign ' + new Date().toLocaleDateString()),
       brandId: brand.id,
       brandName: brand.name,
+      engine: llm.describe(settings),
       data
     });
     send({ index: 6, total: 6, label: 'Done', status: 'complete' });

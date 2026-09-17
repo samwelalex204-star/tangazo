@@ -1,8 +1,8 @@
 {
   "name": "tangazo",
   "productName": "TANGAZO",
-  "version": "1.0.0",
-  "description": "TANGAZO - Automated brand marketing department. Brand brain, campaign generation, content calendar and scheduled publishing for Instagram, Facebook, TikTok and LinkedIn.",
+  "version": "1.1.0",
+  "description": "TANGAZO - Automated brand marketing department. Brand brain, campaign generation, content calendar and scheduled publishing for Instagram, Facebook, TikTok and LinkedIn. Runs on Claude, ChatGPT or any OpenAI-compatible model.",
   "main": "main.js",
   "author": "Sam",
   "license": "UNLICENSED",
@@ -34,4 +34,3 @@
     }
   }
 }
-

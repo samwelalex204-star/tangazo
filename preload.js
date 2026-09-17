@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('tangazo', {
   settings: {
     get: call('settings:get'),
     save: call('settings:save'),
+    providers: call('settings:providers'),
     testKey: call('settings:testKey'),
     testWebhook: call('settings:testWebhook')
   },

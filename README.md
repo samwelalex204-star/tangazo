@@ -17,19 +17,33 @@ Windows SmartScreen will warn you the first time, because the app is not code-si
 Click **More info → Run anyway**. Code signing costs a few hundred dollars a year; if
 you ever sell TANGAZO, that is the point to buy a certificate.
 
-## 2. Add your API key
+## 2. Pick an AI and add a key
 
-TANGAZO thinks using Claude. That needs an Anthropic API key, which is billed separately
-from a Claude subscription.
+TANGAZO does not care which AI does the thinking. **Settings → AI provider** offers:
 
-1. Go to **console.anthropic.com → API Keys** and create one.
-2. In TANGAZO, open **Settings**, paste it, press **Test connection**.
+| Provider | Key from | Notes |
+|---|---|---|
+| Anthropic (Claude) | console.anthropic.com → API Keys | Default. Best at holding a long brand brief in mind. |
+| OpenAI (ChatGPT) | platform.openai.com → API keys | Equally capable; price and availability differ. |
+| Other (OpenAI-compatible) | wherever you got it | OpenRouter, DeepSeek, Groq, Together, or a local server. Paste the base URL too. |
 
-The key is stored on your machine only, encrypted by Windows where the OS allows it.
-It is never sent anywhere except to Anthropic.
+Paste a key, press **Test connection**, then **Save settings**. The bottom-left corner
+shows which engine is live.
 
-**What it costs:** a full 30-day campaign is roughly 60,000–120,000 tokens, which is a
-few US dollars at current Sonnet pricing. A single agent run is cents.
+Each provider keeps its **own key and model**, so switching back and forth never means
+pasting a key again. If one provider is down, has a billing problem, or gets expensive,
+change the dropdown and carry on — the agents, the Brand Brain and everything already
+generated are untouched.
+
+Keys are stored on your machine only, encrypted by Windows where the OS allows it, and
+sent nowhere except the provider you chose.
+
+**Model names change.** The field is free text on purpose: when a provider retires a
+model, type the current name and nothing else needs to change.
+
+**What it costs:** a full 30-day campaign is roughly 60,000–120,000 tokens — a few US
+dollars on a mid-tier model. A single agent run is cents. Cheaper models work; they just
+write blander copy.
 
 ## 3. Tune the Brand Brain
 
@@ -189,7 +203,9 @@ preload.js               The only bridge to the renderer (context-isolated)
 src/core/store.js        Atomic JSON persistence, corruption recovery
 src/core/brands.js       Brand Brain schema, the Zora seed, brief rendering
 src/core/agents.js       The ten agents: system prompts and JSON contracts
-src/core/claude.js       API client, retry/backoff, JSON repair for truncated replies
+src/core/llm.js          Provider router - everything upstream calls this, never a vendor
+src/core/claude.js       Anthropic driver + the shared JSON repair for truncated replies
+src/core/openai.js       OpenAI driver, also drives any OpenAI-compatible endpoint
 src/core/pipeline.js     Multi-agent campaign orchestration, chunked calendar generation
 src/core/exporters.js    CSV / ICS / Markdown exports
 src/core/publisher.js    Webhook scheduler, HMAC signing, retry
@@ -199,7 +215,8 @@ src/renderer/            The UI
 ```bash
 npm install
 npm start          # run it
-npm test           # 49 checks: store, brand brain, agents, exports, publisher, full pipeline
+npm test           # 73 checks: store, brand brain, agents, both providers, exports,
+                   # publisher, and the full pipeline run on Claude and on ChatGPT
 npm run smoke      # boots the real app headlessly, verifies every view renders
 npm run dist       # build a Windows installer + portable exe (run on Windows)
 ```

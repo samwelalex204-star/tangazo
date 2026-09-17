@@ -26,6 +26,8 @@ const pipeline = require('../src/core/pipeline');
 const exporters = require('../src/core/exporters');
 const publisher = require('../src/core/publisher');
 const claude = require('../src/core/claude');
+const openai = require('../src/core/openai');
+const llm = require('../src/core/llm');
 
 console.log('\nTANGAZO self-check\n');
 
@@ -66,10 +68,56 @@ test('survives a corrupted file', () => {
 });
 
 test('settings round-trip without safeStorage', () => {
-  store.saveSettings({ model: 'claude-sonnet-4-5', apiKey: 'sk-test-123', webhookUrl: 'https://example.com/hook' });
+  store.saveSettings({
+    providers: { anthropic: { apiKey: 'sk-ant-test', model: 'claude-sonnet-4-5' } },
+    webhookUrl: 'https://example.com/hook'
+  });
   const s = store.getSettings();
-  assert.strictEqual(s.apiKey, 'sk-test-123');
+  assert.strictEqual(s.providers.anthropic.apiKey, 'sk-ant-test');
   assert.strictEqual(s.webhookUrl, 'https://example.com/hook');
+});
+
+test('saving one provider does not wipe another', () => {
+  store.saveSettings({ providers: { openai: { apiKey: 'sk-openai-test', model: 'gpt-4.1' } } });
+  const s = store.getSettings();
+  assert.strictEqual(s.providers.openai.apiKey, 'sk-openai-test');
+  assert.strictEqual(s.providers.anthropic.apiKey, 'sk-ant-test', 'the Claude key was lost');
+});
+
+test('both keys survive a reload from disk', () => {
+  store.loadSettings();
+  const s = store.getSettings();
+  assert.strictEqual(s.providers.anthropic.apiKey, 'sk-ant-test');
+  assert.strictEqual(s.providers.openai.apiKey, 'sk-openai-test');
+});
+
+test('switching the active provider keeps every key', () => {
+  store.saveSettings({ provider: 'openai' });
+  const s = store.getSettings();
+  assert.strictEqual(s.provider, 'openai');
+  assert.strictEqual(s.providers.anthropic.apiKey, 'sk-ant-test');
+  store.saveSettings({ provider: 'anthropic' });
+});
+
+test('an unknown provider falls back instead of breaking', () => {
+  store.saveSettings({ provider: 'nonsense-provider' });
+  assert.strictEqual(store.getSettings().provider, 'anthropic');
+});
+
+test('settings from the single-provider version are migrated', () => {
+  const fs2 = require('fs');
+  fs2.writeFileSync(path.join(tmp, 'settings.json'), JSON.stringify({
+    apiKey: 'sk-ant-legacy', model: 'claude-3-5-sonnet', maxTokens: 4000, webhookUrl: 'https://old.example/hook'
+  }));
+  const s = store.loadSettings();
+  assert.strictEqual(s.providers.anthropic.apiKey, 'sk-ant-legacy', 'legacy key not carried over');
+  assert.strictEqual(s.providers.anthropic.model, 'claude-3-5-sonnet', 'legacy model not carried over');
+  assert.strictEqual(s.maxTokens, 4000);
+  assert.strictEqual(s.webhookUrl, 'https://old.example/hook');
+  assert.ok(!('apiKey' in s), 'legacy top-level key should be removed');
+  assert.ok(s.providers.openai, 'openai provider missing after migration');
+  // restore for later tests
+  store.saveSettings({ providers: { anthropic: { apiKey: 'sk-ant-test' }, openai: { apiKey: 'sk-openai-test' } } });
 });
 
 test('removes records', () => {
@@ -218,6 +266,77 @@ test('throws clearly on total garbage', () => {
   assert.throws(() => claude.parseJsonLoose('not json at all'), /not valid JSON/);
 });
 
+/* ------------------------------------------------------------- providers */
+console.log('\nproviders');
+
+test('three providers are offered', () => {
+  const list = llm.listProviders();
+  assert.strictEqual(list.length, 3);
+  assert.deepStrictEqual(list.map(p => p.id).sort(), ['anthropic', 'compatible', 'openai']);
+  list.forEach(p => assert.ok(p.name && typeof p.needsBaseUrl === 'boolean'));
+});
+
+test('activeConfig reads the active provider', () => {
+  const s = {
+    provider: 'openai',
+    providers: { anthropic: { apiKey: 'a', model: 'am' }, openai: { apiKey: 'o', model: 'om' } }
+  };
+  const c = llm.activeConfig(s);
+  assert.strictEqual(c.id, 'openai');
+  assert.strictEqual(c.apiKey, 'o');
+  assert.strictEqual(c.model, 'om');
+});
+
+test('activeConfig falls back to the provider default model', () => {
+  const c = llm.activeConfig({ provider: 'anthropic', providers: { anthropic: { apiKey: 'a' } } });
+  assert.strictEqual(c.model, 'claude-sonnet-4-5');
+});
+
+test('a missing key is reported with the provider named', () => {
+  assert.throws(
+    () => llm.assertReady({ provider: 'openai', providers: { openai: { apiKey: '', model: 'gpt-4.1' } } }),
+    /OpenAI/
+  );
+});
+
+test('an OpenAI-compatible provider must have a base URL', () => {
+  assert.throws(
+    () => llm.assertReady({ provider: 'compatible', providers: { compatible: { apiKey: 'k', model: 'm', baseUrl: '' } } }),
+    /base URL/
+  );
+  assert.doesNotThrow(
+    () => llm.assertReady({ provider: 'compatible', providers: { compatible: { apiKey: 'k', model: 'm', baseUrl: 'https://x/v1' } } })
+  );
+});
+
+test('describe names the engine for the UI', () => {
+  const d = llm.describe({ provider: 'openai', providers: { openai: { apiKey: 'o', model: 'gpt-4.1' } } });
+  assert.strictEqual(d.provider, 'openai');
+  assert.strictEqual(d.model, 'gpt-4.1');
+  assert.strictEqual(d.hasKey, true);
+  assert.ok(/OpenAI/.test(d.providerName));
+});
+
+test('base URLs are normalised', () => {
+  assert.strictEqual(openai.chatUrl(null), 'https://api.openai.com/v1/chat/completions');
+  assert.strictEqual(openai.chatUrl('https://openrouter.ai/api/v1'), 'https://openrouter.ai/api/v1/chat/completions');
+  assert.strictEqual(openai.chatUrl('https://openrouter.ai/api/v1/'), 'https://openrouter.ai/api/v1/chat/completions');
+  assert.strictEqual(openai.chatUrl('https://x.y/v1/chat/completions'), 'https://x.y/v1/chat/completions');
+});
+
+/* -------------------------------------------- provider calls, mocked wire */
+
+const realFetch = global.fetch;
+function mockFetch(handler) { global.fetch = handler; }
+function restoreFetch() { global.fetch = realFetch; }
+
+function okChat(text) {
+  return {
+    ok: true, status: 200,
+    text: async () => JSON.stringify({ choices: [{ message: { content: text }, finish_reason: 'stop' }] })
+  };
+}
+
 /* --------------------------------------------------------------- exports */
 console.log('\nexports');
 
@@ -353,6 +472,155 @@ async function testAsync(name, fn) {
       () => claude.complete({ apiKey: '', model: 'x', prompt: 'hi' }),
       /API key/
     );
+  });
+
+  console.log('\nprovider calls (mocked)');
+
+  await testAsync('OpenAI request carries system, user and the JSON contract', async () => {
+    let seen = null, url = null;
+    mockFetch(async (u, o) => { url = u; seen = JSON.parse(o.body); return okChat('{"a":1}'); });
+    try {
+      const out = await openai.completeJson({ apiKey: 'k', model: 'gpt-4.1', system: 'SYS', prompt: 'Return JSON' });
+      assert.deepStrictEqual(out, { a: 1 });
+      assert.strictEqual(url, 'https://api.openai.com/v1/chat/completions');
+      assert.strictEqual(seen.model, 'gpt-4.1');
+      assert.strictEqual(seen.messages[0].role, 'system');
+      assert.strictEqual(seen.messages[0].content, 'SYS');
+      assert.strictEqual(seen.messages[1].role, 'user');
+      assert.deepStrictEqual(seen.response_format, { type: 'json_object' });
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('OpenAI-compatible endpoints get the custom base URL', async () => {
+    let url = null;
+    mockFetch(async (u) => { url = u; return okChat('{"ok":true}'); });
+    try {
+      await openai.completeJson({ apiKey: 'k', model: 'deepseek-chat', prompt: 'Return JSON', baseUrl: 'https://api.deepseek.com/v1' });
+      assert.strictEqual(url, 'https://api.deepseek.com/v1/chat/completions');
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('retries with max_completion_tokens when max_tokens is rejected', async () => {
+    const bodies = [];
+    mockFetch(async (_u, o) => {
+      const b = JSON.parse(o.body);
+      bodies.push(b);
+      if ('max_tokens' in b) {
+        return {
+          ok: false, status: 400,
+          text: async () => JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." } })
+        };
+      }
+      return okChat('{"recovered":true}');
+    });
+    try {
+      const out = await openai.completeJson({ apiKey: 'k', model: 'some-new-model', prompt: 'Return JSON' });
+      assert.deepStrictEqual(out, { recovered: true });
+      assert.strictEqual(bodies.length, 2);
+      assert.ok('max_completion_tokens' in bodies[1]);
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('drops temperature when the model refuses it', async () => {
+    const bodies = [];
+    mockFetch(async (_u, o) => {
+      const b = JSON.parse(o.body);
+      bodies.push(b);
+      if ('max_tokens' in b) {
+        return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens'." } }) };
+      }
+      if ('temperature' in b) {
+        return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "Unsupported value: 'temperature' does not support 1 with this model." } }) };
+      }
+      return okChat('{"fine":true}');
+    });
+    try {
+      const out = await openai.completeJson({ apiKey: 'k', model: 'reasoning-model', prompt: 'Return JSON' });
+      assert.deepStrictEqual(out, { fine: true });
+      assert.strictEqual(bodies.length, 3);
+      assert.ok(!('temperature' in bodies[2]));
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('falls back when response_format is unsupported', async () => {
+    let calls = 0;
+    mockFetch(async (_u, o) => {
+      calls++;
+      const b = JSON.parse(o.body);
+      if (b.response_format) {
+        return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: 'response_format is not supported by this endpoint' } }) };
+      }
+      return okChat('Here you go: {"plain":true}');
+    });
+    try {
+      const out = await openai.completeJson({ apiKey: 'k', model: 'm', prompt: 'Return JSON', baseUrl: 'https://local/v1' });
+      assert.deepStrictEqual(out, { plain: true });
+      assert.ok(calls >= 2);
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('an API error message reaches the user unchanged', async () => {
+    mockFetch(async () => ({
+      ok: false, status: 401,
+      text: async () => JSON.stringify({ error: { message: 'Incorrect API key provided.' } })
+    }));
+    try {
+      await assert.rejects(
+        () => openai.complete({ apiKey: 'bad', model: 'gpt-4.1', prompt: 'hi' }),
+        /Incorrect API key provided/
+      );
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('the router sends work to OpenAI when OpenAI is selected', async () => {
+    let url = null;
+    mockFetch(async (u) => { url = u; return okChat('{"via":"openai"}'); });
+    try {
+      const out = await llm.completeJson(
+        { provider: 'openai', providers: { openai: { apiKey: 'k', model: 'gpt-4.1' } } },
+        { system: 'S', prompt: 'Return JSON' }
+      );
+      assert.deepStrictEqual(out, { via: 'openai' });
+      assert.ok(/api\.openai\.com/.test(url), 'went to ' + url);
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('the router sends work to Anthropic when Claude is selected', async () => {
+    let url = null, body = null;
+    mockFetch(async (u, o) => {
+      url = u; body = JSON.parse(o.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ content: [{ type: 'text', text: '"via":"anthropic"}' }] }) };
+    });
+    try {
+      const out = await llm.completeJson(
+        { provider: 'anthropic', providers: { anthropic: { apiKey: 'k', model: 'claude-sonnet-4-5' } } },
+        { system: 'S', prompt: 'Return JSON' }
+      );
+      assert.deepStrictEqual(out, { via: 'anthropic' });
+      assert.ok(/api\.anthropic\.com/.test(url), 'went to ' + url);
+      assert.strictEqual(body.system, 'S');
+    } finally { restoreFetch(); }
+  });
+
+  await testAsync('the same brand brief reaches whichever provider is active', async () => {
+    const brand = brands.zoraSeed();
+    const { system } = agents.buildPrompt('content', brand, { topic: 't', count: 2 });
+    const seen = [];
+    mockFetch(async (_u, o) => {
+      const b = JSON.parse(o.body);
+      seen.push(b.system || (b.messages && b.messages[0] && b.messages[0].content));
+      return okChat('{"posts":[]}');
+    });
+    try {
+      for (const provider of ['openai', 'anthropic']) {
+        await llm.completeJson(
+          { provider, providers: { openai: { apiKey: 'k', model: 'gpt-4.1' }, anthropic: { apiKey: 'k', model: 'claude-sonnet-4-5' } } },
+          { system, prompt: 'Return JSON' }
+        ).catch(() => {});
+      }
+      assert.strictEqual(seen.length, 2);
+      seen.forEach(s => assert.ok(String(s).includes('Zora Holdings'), 'brand brief missing'));
+    } finally { restoreFetch(); }
   });
 
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}

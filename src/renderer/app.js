@@ -84,15 +84,16 @@ async function boot() {
 function updateStatus() {
   const el = $('#statusDot');
   const txt = $('#statusText');
+  const who = (S.settings.activeProviderName || '').replace(/\s*\(.*\)/, '');
   if (!S.settings.hasApiKey) {
     el.className = 'status bad';
     txt.textContent = 'No API key';
   } else if (S.settings.autoPublish && S.settings.webhookUrl) {
     el.className = 'status ok';
-    txt.textContent = 'Auto-publish on';
+    txt.textContent = who + ' · publishing';
   } else {
     el.className = 'status ok';
-    txt.textContent = 'Ready';
+    txt.textContent = who + ' · ready';
   }
 }
 
@@ -178,8 +179,8 @@ async function viewDashboard() {
     </div>
 
     ${!S.settings.hasApiKey ? `<div class="err-note">
-      <strong>No API key yet.</strong> TANGAZO needs an Anthropic API key to think.
-      Open <a href="#" data-act="go" data-view="settings" class="gold">Settings</a> and paste it — nothing generates until you do.
+      <strong>No API key yet.</strong> TANGAZO needs an AI provider to think — Claude, ChatGPT, or any OpenAI-compatible service.
+      Open <a href="#" data-act="go" data-view="settings" class="gold">Settings</a>, pick one and paste a key — nothing generates until you do.
     </div>` : ''}
 
     <div class="grid c4">
@@ -901,6 +902,68 @@ const REPEAT_TEMPLATES = {
 
 /* -------------------------------------------------------------- settings */
 
+/** The provider whose fields are on screen. Defaults to the active one. */
+function shownProvider(s) {
+  if (!S.settingsProvider || !(s.providers || {})[S.settingsProvider]) {
+    S.settingsProvider = s.provider || 'anthropic';
+  }
+  return S.settingsProvider;
+}
+
+function renderProviderCard(s) {
+  const list = s.providerList || [];
+  const id = shownProvider(s);
+  const spec = list.find(p => p.id === id) || {};
+  const cfg = (s.providers || {})[id] || {};
+  const isActive = s.provider === id;
+
+  return `
+    <div class="field">
+      <label>Which AI runs the agents</label>
+      <select id="setProvider">
+        ${list.map(p => `<option value="${esc(p.id)}" ${p.id === id ? 'selected' : ''}>
+          ${esc(p.name)}${p.id === s.provider ? '  ·  in use' : ''}${(s.providers[p.id] || {}).hasKey && p.id !== s.provider ? '  ·  key saved' : ''}
+        </option>`).join('')}
+      </select>
+      <div class="hint">Each provider keeps its own key, so you can switch back and forth without pasting anything again.
+        ${isActive ? '' : '<strong class="gold">Saving will make this the one in use.</strong>'}</div>
+    </div>
+
+    <div class="field">
+      <label>API key</label>
+      <input type="password" id="setKey" value="${esc(cfg.apiKey || '')}" placeholder="${esc(spec.keyHint || '')}" autocomplete="off">
+      <div class="hint">
+        ${cfg.hasKey ? 'A key is saved. Leave the dots alone to keep it, or type a new one to replace it. ' : ''}
+        ${spec.keyUrl ? `<a href="#" data-act="openUrl" data-url="${esc(spec.keyUrl)}" class="gold">Get a key</a> — billed by usage, separate from any chat subscription.` : ''}
+      </div>
+    </div>
+
+    ${spec.needsBaseUrl ? `<div class="field">
+      <label>API base URL</label>
+      <input type="text" id="setBaseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://.../v1">
+      <div class="hint">${esc(spec.baseUrlHint || '')}</div>
+    </div>` : ''}
+
+    <div class="row">
+      <div class="field">
+        <label>Model</label>
+        <input type="text" id="setModel" value="${esc(cfg.model || spec.defaultModel || '')}" placeholder="${esc(spec.defaultModel || '')}">
+        <div class="hint">${esc(spec.modelHint || '')}</div>
+      </div>
+      <div class="field">
+        <label>Max tokens per call</label>
+        <input type="number" id="setMax" value="${esc(s.maxTokens || 8000)}">
+        <div class="hint">Lower this if replies get cut off.</div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn" data-act="testKey">Test connection</button>
+    </div>
+    <div class="hint" style="margin-top:9px">Model names change over time. If one stops working, check the provider's docs and type the current name here — nothing else needs to change.</div>
+  `;
+}
+
 function viewSettings() {
   const s = S.settings;
   view().innerHTML = `
@@ -910,20 +973,8 @@ function viewSettings() {
     </div>
 
     <div class="card">
-      <h2 class="sec" style="margin-top:0">Claude API</h2>
-      <div class="field">
-        <label>Anthropic API key</label>
-        <input type="password" id="setKey" value="${esc(s.apiKey || '')}" placeholder="sk-ant-...">
-        <div class="hint">Get one at console.anthropic.com → API Keys. This is billed separately from a Claude subscription.
-          <a href="#" data-act="openUrl" data-url="https://console.anthropic.com/settings/keys" class="gold">Open console</a></div>
-      </div>
-      <div class="row">
-        <div class="field"><label>Model</label><input type="text" id="setModel" value="${esc(s.model || '')}"></div>
-        <div class="field"><label>Max tokens per call</label><input type="number" id="setMax" value="${esc(s.maxTokens || 8000)}"></div>
-      </div>
-      <div class="btn-row">
-        <button class="btn" data-act="testKey">Test connection</button>
-      </div>
+      <h2 class="sec" style="margin-top:0">AI provider</h2>
+      ${renderProviderCard(s)}
     </div>
 
     <div class="card">
@@ -967,6 +1018,25 @@ function viewSettings() {
       </div>
     </div>
   `;
+
+  const sel = $('#setProvider');
+  if (sel) {
+    sel.addEventListener('change', e => {
+      S.settingsProvider = e.target.value;
+      viewSettings();
+    });
+  }
+}
+
+/** Read whichever provider fields are currently on screen. */
+function collectProviderPatch() {
+  const id = S.settingsProvider || S.settings.provider || 'anthropic';
+  const entry = { model: ($('#setModel') || {}).value || '' };
+  const key = ($('#setKey') || {}).value || '';
+  if (key) entry.apiKey = key;                       // the mask is filtered out in main
+  const base = $('#setBaseUrl');
+  if (base) entry.baseUrl = base.value.trim();
+  return { provider: id, providers: { [id]: entry } };
 }
 
 /* ---------------------------------------------------------------- actions */
@@ -1198,28 +1268,32 @@ async function handleAction(act, d, el, ev) {
 
     /* ---- settings --------------------------------------------------- */
     case 'saveSettings': {
-      const patch = {
-        apiKey: $('#setKey').value.trim(),
-        model: $('#setModel').value.trim(),
+      const patch = Object.assign(collectProviderPatch(), {
         maxTokens: Number($('#setMax').value) || 8000,
         webhookUrl: $('#setHook').value.trim(),
         webhookSecret: $('#setSecret').value.trim(),
         autoPublish: $('#setAuto').value === 'true'
-      };
+      });
       S.settings = await call(api.settings.save, patch);
       updateStatus();
-      toast('Settings saved', 'ok');
+      toast('Settings saved — using ' + S.settings.activeProviderName, 'ok');
+      viewSettings();
       break;
     }
 
     case 'testKey': {
       el.disabled = true; el.textContent = 'Testing…';
       try {
-        await call(api.settings.save, { apiKey: $('#setKey').value.trim(), model: $('#setModel').value.trim() });
-        const r = await call(api.settings.testKey, {});
-        toast(r.ok ? 'Connected to Claude' : 'Reached the API but got: ' + r.reply, r.ok ? 'ok' : 'err');
-        S.settings = await call(api.settings.get);
-        updateStatus();
+        const id = S.settingsProvider || S.settings.provider;
+        const base = $('#setBaseUrl');
+        const r = await call(api.settings.testKey, {
+          provider: id,
+          apiKey: $('#setKey').value,
+          model: $('#setModel').value.trim(),
+          baseUrl: base ? base.value.trim() : ''
+        });
+        const name = (S.settings.providerList.find(p => p.id === id) || {}).name || id;
+        toast(r.ok ? 'Connected to ' + name : 'Reached the API but it replied: ' + r.reply, r.ok ? 'ok' : 'err');
       } catch (_) {}
       el.disabled = false; el.textContent = 'Test connection';
       break;

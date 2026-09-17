@@ -83,18 +83,45 @@ function reply(prompt) {
   });
 }
 
+/**
+ * One mock standing in for both wire formats, so the pipeline is proven to work
+ * the same whether it is talking to Claude or to ChatGPT.
+ */
 global.fetch = async (url, opts) => {
   const body = JSON.parse(opts.body);
-  const prompt = body.messages[0].content;
-  seen.push({ system: body.system, prompt });
+  const isOpenAI = !/api\.anthropic\.com/.test(String(url));
+
+  const system = isOpenAI ? (body.messages.find(m => m.role === 'system') || {}).content : body.system;
+  const prompt = isOpenAI
+    ? (body.messages.filter(m => m.role === 'user').pop() || {}).content
+    : body.messages[0].content;
+
+  seen.push({ system, prompt, openai: isOpenAI });
   const text = reply(prompt);
-  // The client sends a '{' prefill, so strip the leading brace from the mock.
+
+  if (isOpenAI) {
+    return {
+      ok: true, status: 200,
+      text: async () => JSON.stringify({ choices: [{ message: { content: text }, finish_reason: 'stop' }] })
+    };
+  }
+  // The Anthropic client prefills '{', so the mock returns the rest.
   return {
-    ok: true,
-    status: 200,
+    ok: true, status: 200,
     text: async () => JSON.stringify({ content: [{ type: 'text', text: text.replace(/^\{/, '') }] })
   };
 };
+
+function settingsFor(provider) {
+  return {
+    provider,
+    providers: {
+      anthropic: { apiKey: 'sk-ant-mock', model: 'claude-sonnet-4-5' },
+      openai: { apiKey: 'sk-openai-mock', model: 'gpt-4.1' }
+    },
+    maxTokens: 4000
+  };
+}
 
 /* ------------------------------------------------------------------- run */
 
@@ -108,7 +135,7 @@ global.fetch = async (url, opts) => {
   console.log('\nTANGAZO end-to-end (mock model)\n');
 
   const brand = brands.zoraSeed();
-  const settings = { apiKey: 'sk-mock', model: 'mock', maxTokens: 4000 };
+  const settings = settingsFor('anthropic');
   const progress = [];
 
   truncateNext = true; // first calendar chunk comes back cut off
@@ -188,6 +215,34 @@ global.fetch = async (url, opts) => {
     assert.ok(md.includes('Sell 400 panels in 30 days'));
     assert.ok(md.includes('WhatsApp sequence'));
     assert.ok(md.length > 3000, 'pack suspiciously short: ' + md.length);
+  });
+
+  /* ---- parity: the identical pipeline, driven by ChatGPT instead -------- */
+  seen.length = 0;
+  const viaOpenAI = await pipeline.runCampaign({
+    brand,
+    input: { brief: 'Same brief, different engine.', days: 10, startDate: '2026-09-21' },
+    settings: settingsFor('openai')
+  });
+
+  check('the whole pipeline runs on ChatGPT too', () => {
+    ['strategy', 'campaign', 'calendar', 'creatives', 'ads', 'personas'].forEach(k =>
+      assert.ok(viaOpenAI[k], 'missing ' + k));
+    assert.ok(viaOpenAI.calendar.length >= 8, 'got ' + viaOpenAI.calendar.length + ' slots');
+    assert.strictEqual(viaOpenAI.calendar[0].date, '2026-09-21');
+  });
+
+  check('every call used the OpenAI wire format and kept the brand', () => {
+    assert.ok(seen.length >= 6, 'only ' + seen.length + ' calls');
+    seen.forEach((c, i) => {
+      assert.strictEqual(c.openai, true, 'call ' + i + ' did not go to OpenAI');
+      assert.ok(String(c.system).includes('Zora Holdings'), 'call ' + i + ' lost the brand brief');
+    });
+  });
+
+  check('output from either engine exports the same way', () => {
+    const csv = exporters.publerCsv(viaOpenAI.calendar);
+    assert.strictEqual(csv.split('\r\n').length, viaOpenAI.calendar.length + 1);
   });
 
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}

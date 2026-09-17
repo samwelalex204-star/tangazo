@@ -25,10 +25,17 @@ const EMPTY_DB = {
   research: []
 };
 
+/**
+ * Each provider keeps its own key and model, so switching between Claude and
+ * ChatGPT never means re-pasting a key. `provider` names the active one.
+ */
 const DEFAULT_SETTINGS = {
-  apiKey: '',
-  apiKeyEncrypted: null,
-  model: 'claude-sonnet-4-5',
+  provider: 'anthropic',
+  providers: {
+    anthropic:  { apiKey: '', model: 'claude-sonnet-4-5', baseUrl: '' },
+    openai:     { apiKey: '', model: 'gpt-4.1',           baseUrl: '' },
+    compatible: { apiKey: '', model: '',                  baseUrl: '' }
+  },
   maxTokens: 8000,
   webhookUrl: '',
   webhookSecret: '',
@@ -90,14 +97,48 @@ function saveDb(next) {
 
 let _settings = null;
 
+function canEncrypt() {
+  try { return !!(safeStorage && safeStorage.isEncryptionAvailable()); }
+  catch (_) { return false; }
+}
+
+function decrypt(b64) {
+  if (!b64 || !canEncrypt()) return '';
+  try { return safeStorage.decryptString(Buffer.from(b64, 'base64')); }
+  catch (_) { return ''; }
+}
+
 function loadSettings() {
   const raw = readJson(settingsPath(), DEFAULT_SETTINGS);
-  // Decrypt the key if it was stored encrypted.
-  if (raw.apiKeyEncrypted && safeStorage && safeStorage.isEncryptionAvailable()) {
-    try {
-      raw.apiKey = safeStorage.decryptString(Buffer.from(raw.apiKeyEncrypted, 'base64'));
-    } catch (_) { raw.apiKey = ''; }
+
+  // The file's `providers` object replaces the default wholesale, so fill in any
+  // provider the file predates rather than losing it.
+  raw.providers = Object.assign({}, DEFAULT_SETTINGS.providers, raw.providers || {});
+  for (const id of Object.keys(DEFAULT_SETTINGS.providers)) {
+    raw.providers[id] = Object.assign({}, DEFAULT_SETTINGS.providers[id], raw.providers[id] || {});
   }
+
+  // Migrate the single-provider layout used before multi-provider support.
+  const legacyKey = raw.apiKeyEncrypted ? decrypt(raw.apiKeyEncrypted) : (raw.apiKey || '');
+  if (legacyKey && !raw.providers.anthropic.apiKey && !raw.providers.anthropic.apiKeyEncrypted) {
+    raw.providers.anthropic.apiKey = legacyKey;
+    if (raw.model) raw.providers.anthropic.model = raw.model;
+  }
+  delete raw.apiKey;
+  delete raw.apiKeyEncrypted;
+  delete raw.model;
+
+  // Decrypt each provider's stored key.
+  for (const id of Object.keys(raw.providers)) {
+    const p = raw.providers[id];
+    if (p.apiKeyEncrypted) {
+      p.apiKey = decrypt(p.apiKeyEncrypted);
+      delete p.apiKeyEncrypted;
+    }
+  }
+
+  if (!raw.provider || !raw.providers[raw.provider]) raw.provider = DEFAULT_SETTINGS.provider;
+
   _settings = raw;
   return _settings;
 }
@@ -107,18 +148,39 @@ function getSettings() {
   return _settings;
 }
 
+/**
+ * Merge a patch into settings and persist. `providers` is merged per provider,
+ * so saving one provider's key never blanks another's.
+ */
 function saveSettings(patch) {
-  const s = Object.assign(getSettings(), patch || {});
-  const onDisk = Object.assign({}, s);
-  if (s.apiKey && safeStorage && safeStorage.isEncryptionAvailable()) {
-    onDisk.apiKeyEncrypted = safeStorage.encryptString(s.apiKey).toString('base64');
-    onDisk.apiKey = '';
-  } else {
-    onDisk.apiKeyEncrypted = null;
+  const current = getSettings();
+  const next = Object.assign({}, current, patch || {});
+
+  next.providers = Object.assign({}, current.providers);
+  if (patch && patch.providers) {
+    for (const id of Object.keys(patch.providers)) {
+      next.providers[id] = Object.assign({}, current.providers[id] || {}, patch.providers[id]);
+    }
   }
+  if (!next.providers[next.provider]) next.provider = DEFAULT_SETTINGS.provider;
+
+  // Keys are encrypted at rest when the OS offers it; plain text otherwise, so
+  // the app still works on machines where safeStorage is unavailable.
+  const onDisk = Object.assign({}, next, { providers: {} });
+  for (const id of Object.keys(next.providers)) {
+    const p = Object.assign({}, next.providers[id]);
+    if (p.apiKey && canEncrypt()) {
+      p.apiKeyEncrypted = safeStorage.encryptString(p.apiKey).toString('base64');
+      p.apiKey = '';
+    } else {
+      delete p.apiKeyEncrypted;
+    }
+    onDisk.providers[id] = p;
+  }
+
   writeJsonAtomic(settingsPath(), onDisk);
-  _settings = s;
-  return s;
+  _settings = next;
+  return next;
 }
 
 /* ------------------------------------------------------------- collections */
@@ -167,7 +229,7 @@ function findOne(collection, id) {
 
 module.exports = {
   init, getDb, saveDb, loadDb,
-  getSettings, saveSettings,
+  getSettings, saveSettings, loadSettings,
   insert, update, remove, find, findOne, uid,
   dataDir: () => DATA_DIR,
   DEFAULT_SETTINGS

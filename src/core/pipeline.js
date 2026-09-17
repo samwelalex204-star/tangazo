@@ -15,7 +15,7 @@
  * campaign phases and the creatives know the calendar.
  */
 
-const claude = require('./claude');
+const llm = require('./llm');
 const { buildPrompt, systemFor } = require('./agents');
 
 function nextMonday(from) {
@@ -43,15 +43,12 @@ function addDays(date, n) {
  */
 async function runAgent({ agentId, brand, input, settings, signal }) {
   const { system, prompt } = buildPrompt(agentId, brand, input);
-  const data = await claude.completeJson({
-    apiKey: settings.apiKey,
-    model: settings.model,
+  return llm.completeJson(settings, {
     maxTokens: settings.maxTokens || 8000,
     system,
     prompt,
     signal
   });
-  return data;
 }
 
 /**
@@ -68,9 +65,7 @@ async function runCampaign({ brand, input, settings, onProgress, signal }) {
   const endIso = isoDate(addDays(start, days - 1));
 
   const sys = systemFor(brand);
-  const ask = async (prompt, maxTokens) => claude.completeJson({
-    apiKey: settings.apiKey,
-    model: settings.model,
+  const ask = async (prompt, maxTokens) => llm.completeJson(settings, {
     maxTokens: maxTokens || settings.maxTokens || 8000,
     system: sys,
     prompt,
